@@ -163,13 +163,17 @@ def initialize_models():
     global road_model, vehicle_model
     
     try:
-        # Download models if they don't exist (replace with your actual URLs)
-        # You'll need to upload your models to GitHub Releases or another hosting service
-        # download_model_if_needed("unet_road_segmentation.keras", "YOUR_ROAD_MODEL_DOWNLOAD_URL")
-        # download_model_if_needed("unet_multi_classV1.keras", "YOUR_VEHICLE_MODEL_DOWNLOAD_URL")
+        # Download models if they don't exist
+        # Replace these URLs with your actual GitHub release URLs
+        road_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/tag/v1.0/unet_road_segmentation.keras"
+        vehicle_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/tag/v1.0/unet_multi_classV1.keras"
         
-        # For now, assuming models are already present
-        road_model = load_trained_model("unet_road_segmentation (Better).keras")
+        # Download models
+        download_model_if_needed("unet_road_segmentation.keras", road_model_url)
+        download_model_if_needed("unet_multi_classV1.keras", vehicle_model_url)
+        
+        # Load models
+        road_model = load_trained_model("unet_road_segmentation.keras")
         vehicle_model = load_trained_model("unet_multi_classV1.keras")
         logging.info("Models loaded successfully")
     except Exception as e:
@@ -432,17 +436,23 @@ def get_historical_data(camera_id):
             "status": "error"
         }), 404
 
+# Initialize and start the application
 if __name__ == '__main__':
-    # Get port from environment (Railway sets this)
-    port = int(os.environ.get('PORT', 5000))
-    
-    # Initialize models
-    initialize_models()
-    
-    # Start background processing thread
-    processor_thread = threading.Thread(target=background_processor, daemon=True)
-    processor_thread.start()
-    logging.info("Background processor started")
-    
-    # Start Flask app
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    try:
+        # Initialize models
+        initialize_models()
+        
+        # Start background processing thread
+        processor_thread = threading.Thread(target=background_processor, daemon=True)
+        processor_thread.start()
+        logging.info("Background processor started")
+        
+        # Get port from environment (Railway sets this)
+        port = int(os.environ.get('PORT', 5000))
+        
+        # Start Flask app
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+        
+    except Exception as e:
+        logging.error(f"Failed to start application: {e}")
+        exit(1)
