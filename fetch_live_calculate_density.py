@@ -163,6 +163,23 @@ def initialize_models():
     global road_model, vehicle_model
     
     try:
+        # Use the EXACT filenames from your GitHub release
+        road_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/download/v1.0/unet_road_segmentation.Better.keras"
+        vehicle_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/download/v1.0/unet_multi_classV1.keras"
+        
+        # Download models with MATCHING local filenames
+        download_model_if_needed("unet_road_segmentation.Better.keras", road_model_url)
+        download_model_if_needed("unet_multi_classV1.keras", vehicle_model_url)
+        
+        # Load models with the SAME filenames
+        road_model = load_trained_model("unet_road_segmentation.Better.keras")
+        vehicle_model = load_trained_model("unet_multi_classV1.keras")
+        logging.info("Models loaded successfully")
+    except Exception as e:
+        logging.error(f"Failed to load models: {e}")
+        raise
+    
+    try:
         # Download models if they don't exist
         # Correct GitHub release URLs
         road_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/download/v1.0/unet_road_segmentation.Better.keras"
