@@ -313,7 +313,7 @@ def initialize_models():
                     raise Exception(f"Failed to download {model_name} via any method")
         logging.info("=== Models Downloaded, Loading TensorFlow Models ===")
         logging.info("Loading road segmentation model...")
-        road_model = load_trained_model("unet_road_segmentation.Better.keras", custom_objects={"dice_loss": dice_loss})
+        roadriv_model = load_trained_model("unet_road_segmentation.Better.keras", custom_objects={"dice_loss": dice_loss})
         gc.collect()
         logging.info("✓ Road model loaded")
         logging.info("Loading vehicle classification model...")
