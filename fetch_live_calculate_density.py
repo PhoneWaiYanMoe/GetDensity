@@ -8,9 +8,24 @@ import json
 from datetime import datetime, timedelta
 import unicodedata
 import logging
+import threading
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Flask app setup
+app = Flask(__name__)
+CORS(app)  # Enable CORS for cross-origin requests
+
+# Global variables for in-memory storage
+current_densities = {}
+today_densities = {}
+critical_densities = {}
+historical_data = {}
+last_update_time = None
+is_processing = False
 
 # Parameters
 IMG_HEIGHT = 128
@@ -30,6 +45,20 @@ def load_trained_model(model_path, custom_objects=None):
     except Exception as e:
         logging.error(f"Failed to load model {model_path}: {e}")
         raise
+
+# Download model from URL if not exists
+def download_model_if_needed(model_name, download_url):
+    if not os.path.exists(model_name):
+        logging.info(f"Downloading {model_name}...")
+        try:
+            response = requests.get(download_url, timeout=60)
+            response.raise_for_status()
+            with open(model_name, 'wb') as f:
+                f.write(response.content)
+            logging.info(f"{model_name} downloaded successfully")
+        except Exception as e:
+            logging.error(f"Failed to download {model_name}: {e}")
+            raise
 
 # Preprocess Image
 def preprocess_image(img):
@@ -95,11 +124,11 @@ camera_mapping = {
     'Nút giao Công Trường Dân Chủ_1': 'L'
 }
 
-# List of cameras with their IDs and locations (updated to match camera_mapping)
+# List of cameras with their IDs and locations
 cameras = [
     ("6623e7076f998a001b2523ea", "Lý Thái Tổ - Sư Vạn Hạnh"),
     ("5deb576d1dc17d7c5515acf8", "Ba Tháng Hai - Cao Thắng"),
-    ("63ae7a9cbfd3d90017e8f303", "Điện Biên Phủ – Cao Thắng"),  # Fixed to use en dash
+    ("63ae7a9cbfd3d90017e8f303", "Điện Biên Phủ – Cao Thắng"),
     ("5deb576d1dc17d7c5515ad21", "Nút giao Ngã sáu Nguyễn Tri Phương"),
     ("5deb576d1dc17d7c5515ad22", "Nút giao Ngã sáu Nguyễn Tri Phương_1"),
     ("5d8cdd26766c880017188974", "Nút giao Lê Đại Hành 2 (Lê Đại Hành)"),
@@ -111,20 +140,7 @@ cameras = [
     ("5deb576d1dc17d7c5515acfa", "Nút giao Công Trường Dân Chủ_1")
 ]
 
-# Paths for models and output
-road_model_path = "unet_road_segmentation (Better).keras"
-vehicle_model_path = "unet_multi_classV1.keras"
-base_directory = r"E:\playground\flutter_playground_vsc\Flutter_ggmap_project_Without_Sequential"
-densities_dir = os.path.join(base_directory, "densities")
-today_densities_path = os.path.join(densities_dir, "today_densities.json")
-yesterday_max_densities_path = os.path.join(densities_dir, "yesterday_max_densities.json")
-critical_densities_path = os.path.join(densities_dir, "critical_densities.json")
-output_json_path = os.path.join(base_directory, "densities.json")
-
-# Create directories if they don't exist
-os.makedirs(densities_dir, exist_ok=True)
-
-# Create a session to persist cookies n 
+# Create a session to persist cookies
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
@@ -139,86 +155,55 @@ default_params = {
     "h": 230
 }
 
-# Load models
-try:
-    road_model = load_trained_model(road_model_path)
-    vehicle_model = load_trained_model(vehicle_model_path)
-    logging.info("Models loaded successfully")
-except Exception as e:
-    logging.error(f"Failed to load models: {e}")
-    exit(1)
+# Initialize models (will be loaded when app starts)
+road_model = None
+vehicle_model = None
 
-# Function to manage historical densities
+def initialize_models():
+    global road_model, vehicle_model
+    
+    try:
+        # Download models if they don't exist (replace with your actual URLs)
+        # You'll need to upload your models to GitHub Releases or another hosting service
+        # download_model_if_needed("unet_road_segmentation.keras", "YOUR_ROAD_MODEL_DOWNLOAD_URL")
+        # download_model_if_needed("unet_multi_classV1.keras", "YOUR_VEHICLE_MODEL_DOWNLOAD_URL")
+        
+        # For now, assuming models are already present
+        road_model = load_trained_model("unet_road_segmentation (Better).keras")
+        vehicle_model = load_trained_model("unet_multi_classV1.keras")
+        logging.info("Models loaded successfully")
+    except Exception as e:
+        logging.error(f"Failed to load models: {e}")
+        raise
+
+# Function to manage historical densities in memory
 def manage_historical_densities():
+    global today_densities, critical_densities
+    
     today = datetime.now().date()
-    yesterday = today - timedelta(days=1)
-    day_before_yesterday = today - timedelta(days=2)
-
-    # Initialize today’s densities
-    today_densities = {}
-    if os.path.exists(today_densities_path):
-        try:
-            with open(today_densities_path, 'r', encoding='utf-8') as f:
-                today_densities = json.load(f)
-            # Check if today_densities is from today
-            if 'date' in today_densities:
-                file_date = datetime.strptime(today_densities['date'], '%Y-%m-%d').date()
-                if file_date != today:
-                    # Move today’s densities to yesterday if it’s from a previous day
-                    max_densities = {}
-                    for cam_id in today_densities:
-                        if cam_id != 'date':
-                            timestamps = today_densities[cam_id]
-                            max_density = max(timestamps.values()) if timestamps else 0.0
-                            max_densities[cam_id] = max_density
-                    with open(yesterday_max_densities_path, 'w', encoding='utf-8') as f:
-                        json.dump({'date': yesterday.strftime('%Y-%m-%d'), **max_densities}, f, ensure_ascii=False)
-                    today_densities = {'date': today.strftime('%Y-%m-%d')}
-                    logging.info(f"Updated yesterday_max_densities.json with max densities from {file_date}")
-            else:
-                today_densities = {'date': today.strftime('%Y-%m-%d')}
-        except Exception as e:
-            logging.error(f"Error reading today_densities.json: {e}")
-            today_densities = {'date': today.strftime('%Y-%m-%d')}
-    else:
+    
+    # Initialize today's densities if not exists or if it's a new day
+    if not today_densities or today_densities.get('date') != today.strftime('%Y-%m-%d'):
+        # If we have data from previous day, calculate max densities as critical
+        if today_densities and 'date' in today_densities:
+            new_critical = {}
+            for cam_id in today_densities:
+                if cam_id != 'date':
+                    timestamps = today_densities[cam_id]
+                    max_density = max(timestamps.values()) if timestamps else 0.0
+                    new_critical[cam_id] = max_density
+            if new_critical:
+                critical_densities = new_critical
+                logging.info(f"Updated critical densities from yesterday's max: {critical_densities}")
+        
+        # Reset today's densities for new day
         today_densities = {'date': today.strftime('%Y-%m-%d')}
 
-    # Load yesterday’s max densities as critical densities
-    critical_densities = {}
-    if os.path.exists(yesterday_max_densities_path):
-        try:
-            with open(yesterday_max_densities_path, 'r', encoding='utf-8') as f:
-                yesterday_data = json.load(f)
-                file_date = datetime.strptime(yesterday_data['date'], '%Y-%m-%d').date()
-                if file_date == yesterday:
-                    critical_densities = {k: v for k, v in yesterday_data.items() if k != 'date'}
-                else:
-                    # If yesterday’s data is older, delete it
-                    os.remove(yesterday_max_densities_path)
-                    logging.info(f"Deleted outdated yesterday_max_densities.json from {file_date}")
-        except Exception as e:
-            logging.error(f"Error reading yesterday_max_densities.json: {e}")
-
-    # Save critical densities
-    if critical_densities:
-        with open(critical_densities_path, 'w', encoding='utf-8') as f:
-            json.dump(critical_densities, f, ensure_ascii=False)
-        logging.info(f"Saved critical densities to {critical_densities_path}")
-    else:
-        # Sample critical densities for the first run (based on typical traffic patterns)
+    # Initialize critical densities if empty (first run)
+    if not critical_densities:
         sample_critical_densities = {
-            'A': 80.0,  # Lý Thái Tổ - Sư Vạn Hạnh (busy intersection)
-            'B': 70.0,  # Ba Tháng Hai - Cao Thắng (moderate traffic)
-            'C': 75.0,  # Điện Biên Phủ – Cao Thắng (busy road)
-            'D': 85.0,  # Ngã sáu Nguyễn Tri Phương_1 (very busy)
-            'E': 80.0,  # Ngã sáu Nguyễn Tri Phương (busy)
-            'F': 60.0,  # Lê Đại Hành 2 (less busy)
-            'G': 70.0,  # Lý Thái Tổ - Nguyễn Đình Chiểu (moderate)
-            'H': 90.0,  # Ngã sáu Cộng Hòa_1 (very busy)
-            'I': 85.0,  # Ngã sáu Cộng Hòa (busy)
-            'J': 75.0,  # Điện Biên Phủ - Cách Mạng Tháng Tám (busy)
-            'K': 80.0,  # Công Trường Dân Chủ (busy)
-            'L': 80.0   # Công Trường Dân Chủ_1 (busy)
+            'A': 80.0, 'B': 70.0, 'C': 75.0, 'D': 85.0, 'E': 80.0, 'F': 60.0,
+            'G': 70.0, 'H': 90.0, 'I': 85.0, 'J': 75.0, 'K': 80.0, 'L': 80.0
         }
         critical_densities = {}
         for cam in cameras:
@@ -226,147 +211,244 @@ def manage_historical_densities():
             camera_id = camera_mapping.get(cam_location)
             if camera_id:
                 critical_densities[camera_id] = sample_critical_densities.get(camera_id, 100.0)
-            else:
-                logging.warning(f"No mapping found for {cam_location}, skipping in critical densities")
-        with open(critical_densities_path, 'w', encoding='utf-8') as f:
-            json.dump(critical_densities, f, ensure_ascii=False)
-        logging.info(f"Initialized sample critical densities to {critical_densities_path}: {critical_densities}")
-
-    # Delete day before yesterday’s data if it exists
-    if os.path.exists(yesterday_max_densities_path):
-        try:
-            with open(yesterday_max_densities_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                file_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
-                if file_date <= day_before_yesterday:
-                    os.remove(yesterday_max_densities_path)
-                    logging.info(f"Deleted data from {file_date} (day before yesterday or older)")
-        except Exception as e:
-            logging.error(f"Error checking/deleting old data: {e}")
-
-    return today_densities, critical_densities
+        logging.info(f"Initialized sample critical densities: {critical_densities}")
 
 # Main processing function
 def fetch_and_process_densities():
-    # Visit the main webpage to get cookies
-    try:
-        response = session.get(main_url, timeout=10)
-        logging.info("Visited main webpage to get cookies.")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to visit main webpage: {e}")
+    global current_densities, today_densities, last_update_time, is_processing
+    
+    if is_processing:
+        logging.info("Previous processing still running, skipping this cycle")
         return
-
-    # Manage historical densities
+    
+    is_processing = True
+    
     try:
-        today_densities, critical_densities = manage_historical_densities()
-        logging.info(f"Critical densities (from yesterday's max): {critical_densities}")
-    except Exception as e:
-        logging.error(f"Error managing historical densities: {e}")
-        return
-
-    current_densities = {}
-
-    for cam_id, cam_location in cameras:
-        # Map camera location to ID
-        camera_id = camera_mapping.get(cam_location)
-        if not camera_id:
-            logging.warning(f"No camera mapping for {cam_location}, skipping.")
-            continue
-
-        logging.info(f"Processing camera {camera_id} ({cam_location})")
-
-        # Update the params with the current camera ID
-        params = default_params.copy()
-        params["id"] = cam_id
-
-        # Fetch the live image
-        img = None
-        for attempt in range(3):
-            try:
-                response = session.get(base_url, params=params, timeout=10)
-                if response.status_code == 200:
-                    img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
-                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    if img is not None:
-                        break
-                    else:
-                        logging.warning(f"Camera {cam_id} ({cam_location}), Attempt {attempt + 1}: Failed to decode image.")
-                else:
-                    logging.warning(f"Camera {cam_id} ({cam_location}), Attempt {attempt + 1}: Failed to fetch image: {response.status_code}")
-                time.sleep(2)
-            except requests.exceptions.RequestException as e:
-                logging.warning(f"Camera {cam_id} ({cam_location}), Attempt {attempt + 1}: Network error: {e}")
-                time.sleep(2)
-        if img is None:
-            logging.error(f"Camera {cam_id} ({cam_location}): Failed to fetch or decode image after 3 attempts. Skipping.")
-            continue
-
-        # Process the image to calculate density
+        # Visit the main webpage to get cookies
         try:
-            img_processed = preprocess_image(img)
-            # Step 1: Road Segmentation
-            road_pred = road_model.predict(img_processed, verbose=0)
-            road_mask = postprocess_road_mask(road_pred)
-            # Step 2: Extract Segmented Road
-            segmented_road, mask_resized = extract_segmented_road(img, road_mask)
-            # Step 3: Vehicle Segmentation on Road
-            segmented_road_resized = cv2.resize(segmented_road, (IMG_WIDTH, IMG_HEIGHT)) / 255.0
-            segmented_road_resized = np.expand_dims(segmented_road_resized, axis=0)
-            vehicle_pred = vehicle_model.predict(segmented_road_resized, verbose=0)
-            vehicle_mask = postprocess_vehicle_mask(vehicle_pred)
-            vehicle_mask_resized = cv2.resize(vehicle_mask.astype(np.uint8), 
-                                            (img.shape[1], img.shape[0]), 
-                                            interpolation=cv2.INTER_NEAREST)
-            # Step 4: Calculate Vehicle Density
-            vehicle_pixels = np.count_nonzero(vehicle_mask_resized)
-            road_pixels = np.count_nonzero(mask_resized)
-            vehicle_density = (vehicle_pixels / road_pixels) * 100 if road_pixels > 0 else 0
-            vehicle_density = min(vehicle_density, 100.0)
+            response = session.get(main_url, timeout=10)
+            logging.info("Visited main webpage to get cookies.")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to visit main webpage: {e}")
+            return
 
-            # Use critical density for this camera
-            kc = critical_densities.get(camera_id, 100.0)
-            adjusted_density = (vehicle_density / kc) * 100
-            adjusted_density = min(adjusted_density, 100.0)
+        # Manage historical densities
+        manage_historical_densities()
 
-            current_densities[camera_id] = adjusted_density
-            logging.info(f"Camera {camera_id} ({cam_location}): Density = {adjusted_density:.2f}% (Raw: {vehicle_density:.2f}%, kc: {kc})")
+        new_densities = {}
 
-            # Update today’s densities
-            if camera_id not in today_densities:
-                today_densities[camera_id] = {}
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            today_densities[camera_id][timestamp] = vehicle_density
+        for cam_id, cam_location in cameras:
+            # Map camera location to ID
+            camera_id = camera_mapping.get(cam_location)
+            if not camera_id:
+                logging.warning(f"No camera mapping for {cam_location}, skipping.")
+                continue
 
-        except Exception as e:
-            logging.error(f"Error processing image for {cam_location}: {e}")
-            continue
+            logging.info(f"Processing camera {camera_id} ({cam_location})")
 
-    # Save today’s densities
-    try:
-        with open(today_densities_path, 'w', encoding='utf-8') as f:
-            json.dump(today_densities, f, ensure_ascii=False)
-        logging.info(f"Today’s densities updated at {today_densities_path}")
+            # Update the params with the current camera ID
+            params = default_params.copy()
+            params["id"] = cam_id
+
+            # Fetch the live image
+            img = None
+            for attempt in range(3):
+                try:
+                    response = session.get(base_url, params=params, timeout=10)
+                    if response.status_code == 200:
+                        img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        if img is not None:
+                            break
+                        else:
+                            logging.warning(f"Camera {cam_id} ({cam_location}), Attempt {attempt + 1}: Failed to decode image.")
+                    else:
+                        logging.warning(f"Camera {cam_id} ({cam_location}), Attempt {attempt + 1}: Failed to fetch image: {response.status_code}")
+                    time.sleep(2)
+                except requests.exceptions.RequestException as e:
+                    logging.warning(f"Camera {cam_id} ({cam_location}), Attempt {attempt + 1}: Network error: {e}")
+                    time.sleep(2)
+            
+            if img is None:
+                logging.error(f"Camera {cam_id} ({cam_location}): Failed to fetch or decode image after 3 attempts. Skipping.")
+                continue
+
+            # Process the image to calculate density
+            try:
+                img_processed = preprocess_image(img)
+                # Step 1: Road Segmentation
+                road_pred = road_model.predict(img_processed, verbose=0)
+                road_mask = postprocess_road_mask(road_pred)
+                # Step 2: Extract Segmented Road
+                segmented_road, mask_resized = extract_segmented_road(img, road_mask)
+                # Step 3: Vehicle Segmentation on Road
+                segmented_road_resized = cv2.resize(segmented_road, (IMG_WIDTH, IMG_HEIGHT)) / 255.0
+                segmented_road_resized = np.expand_dims(segmented_road_resized, axis=0)
+                vehicle_pred = vehicle_model.predict(segmented_road_resized, verbose=0)
+                vehicle_mask = postprocess_vehicle_mask(vehicle_pred)
+                vehicle_mask_resized = cv2.resize(vehicle_mask.astype(np.uint8), 
+                                                (img.shape[1], img.shape[0]), 
+                                                interpolation=cv2.INTER_NEAREST)
+                # Step 4: Calculate Vehicle Density
+                vehicle_pixels = np.count_nonzero(vehicle_mask_resized)
+                road_pixels = np.count_nonzero(mask_resized)
+                vehicle_density = (vehicle_pixels / road_pixels) * 100 if road_pixels > 0 else 0
+                vehicle_density = min(vehicle_density, 100.0)
+
+                # Use critical density for this camera
+                kc = critical_densities.get(camera_id, 100.0)
+                adjusted_density = (vehicle_density / kc) * 100
+                adjusted_density = min(adjusted_density, 100.0)
+
+                new_densities[camera_id] = {
+                    'density': round(adjusted_density, 2),
+                    'raw_density': round(vehicle_density, 2),
+                    'critical_density': kc,
+                    'location': cam_location,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                logging.info(f"Camera {camera_id} ({cam_location}): Density = {adjusted_density:.2f}% (Raw: {vehicle_density:.2f}%, kc: {kc})")
+
+                # Update today's densities
+                if camera_id not in today_densities:
+                    today_densities[camera_id] = {}
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                today_densities[camera_id][timestamp] = vehicle_density
+
+            except Exception as e:
+                logging.error(f"Error processing image for {cam_location}: {e}")
+                continue
+
+        # Update global current densities
+        current_densities = new_densities
+        last_update_time = datetime.now().isoformat()
+        logging.info(f"Density update completed at {last_update_time}")
+
     except Exception as e:
-        logging.error(f"Error saving today_densities.json: {e}")
+        logging.error(f"Error in fetch_and_process_densities: {e}")
+    finally:
+        is_processing = False
 
-    # Save current densities for the app
-    try:
-        with open(output_json_path, 'w', encoding='utf-8') as f:
-            json.dump(current_densities, f, ensure_ascii=False)
-        logging.info(f"Current densities saved to {output_json_path}")
-    except Exception as e:
-        logging.error(f"Error saving densities.json: {e}")
-
-# Run the script in a loop
-try:
+# Background thread function
+def background_processor():
     while True:
-        logging.info(f"Starting new density fetch cycle at {datetime.now()}")
-        fetch_and_process_densities()
-        logging.info("Waiting 20 seconds before next cycle...")
-        time.sleep(20)
-except KeyboardInterrupt:
-    logging.info("Program interrupted by user.")
-except Exception as e:
-    logging.error(f"An unexpected error occurred: {e}")
-finally:
-    logging.info("Script finished.")
+        try:
+            logging.info(f"Starting new density fetch cycle at {datetime.now()}")
+            fetch_and_process_densities()
+            logging.info("Waiting 20 seconds before next cycle...")
+            time.sleep(20)
+        except Exception as e:
+            logging.error(f"Error in background processor: {e}")
+            time.sleep(20)
+
+# API Routes
+@app.route('/')
+def home():
+    return jsonify({
+        "message": "Traffic Density API",
+        "status": "running",
+        "last_update": last_update_time,
+        "total_cameras": len(cameras),
+        "endpoints": {
+            "/densities": "Get current traffic densities",
+            "/densities/<camera_id>": "Get specific camera density",
+            "/status": "Get API status",
+            "/cameras": "Get all camera locations"
+        }
+    })
+
+@app.route('/densities')
+def get_densities():
+    """Get all current traffic densities"""
+    return jsonify({
+        "densities": current_densities,
+        "last_update": last_update_time,
+        "total_cameras": len(current_densities),
+        "status": "success"
+    })
+
+@app.route('/densities/<camera_id>')
+def get_camera_density(camera_id):
+    """Get density for a specific camera"""
+    if camera_id in current_densities:
+        return jsonify({
+            "camera_id": camera_id,
+            "data": current_densities[camera_id],
+            "status": "success"
+        })
+    else:
+        return jsonify({
+            "error": f"Camera {camera_id} not found",
+            "available_cameras": list(current_densities.keys()),
+            "status": "error"
+        }), 404
+
+@app.route('/status')
+def get_status():
+    """Get API status and health check"""
+    return jsonify({
+        "status": "healthy",
+        "last_update": last_update_time,
+        "processing": is_processing,
+        "cameras_online": len(current_densities),
+        "total_cameras": len(cameras),
+        "uptime": datetime.now().isoformat(),
+        "models_loaded": road_model is not None and vehicle_model is not None
+    })
+
+@app.route('/cameras')
+def get_cameras():
+    """Get all camera locations and mappings"""
+    camera_info = []
+    for cam_id, cam_location in cameras:
+        camera_id = camera_mapping.get(cam_location)
+        camera_info.append({
+            "id": camera_id,
+            "internal_id": cam_id,
+            "location": cam_location,
+            "online": camera_id in current_densities if current_densities else False
+        })
+    
+    return jsonify({
+        "cameras": camera_info,
+        "total": len(camera_info),
+        "status": "success"
+    })
+
+@app.route('/historical/<camera_id>')
+def get_historical_data(camera_id):
+    """Get today's historical data for a specific camera"""
+    if camera_id in today_densities and camera_id != 'date':
+        return jsonify({
+            "camera_id": camera_id,
+            "date": today_densities.get('date'),
+            "data": today_densities[camera_id],
+            "status": "success"
+        })
+    else:
+        return jsonify({
+            "error": f"No historical data for camera {camera_id}",
+            "status": "error"
+        }), 404
+
+# Initialize and start the application
+if __name__ == '__main__':
+    try:
+        # Initialize models
+        initialize_models()
+        
+        # Start background processing thread
+        processor_thread = threading.Thread(target=background_processor, daemon=True)
+        processor_thread.start()
+        logging.info("Background processor started")
+        
+        # Get port from environment (Railway sets this)
+        port = int(os.environ.get('PORT', 5000))
+        
+        # Start Flask app
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+        
+    except Exception as e:
+        logging.error(f"Failed to start application: {e}")
+        exit(1)
