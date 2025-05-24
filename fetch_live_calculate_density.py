@@ -164,9 +164,9 @@ def initialize_models():
     
     try:
         # Download models if they don't exist
-        # Replace these URLs with your actual GitHub release URLs
-        road_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/tag/v1.0/unet_road_segmentation.keras"
-        vehicle_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/tag/v1.0/unet_multi_classV1.keras"
+        # Correct GitHub release URLs
+        road_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/download/v1.0/unet_road_segmentation.Better.keras"
+        vehicle_model_url = "https://github.com/PhoneWaiYanMoe/GetDensity/releases/download/v1.0/unet_multi_classV1.keras"
         
         # Download models
         download_model_if_needed("unet_road_segmentation.keras", road_model_url)
