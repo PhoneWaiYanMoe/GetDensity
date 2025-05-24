@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psutil
 import gc
+from datetime import datetime
 
 # Disable GPU usage
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -542,22 +543,3 @@ def get_historical_data(camera_id):
             "error": f"No historical data for camera {camera_id}",
             "status": "error"
         }), 404
-
-# Initialize and start the application
-if __name__ == '__main__':
-    try:
-        logging.info("=== HO CHI MINH CITY TRAFFIC DENSITY API ===")
-        logging.info("=== STARTING INITIALIZATION ===")
-        initialize_models()
-        processor_thread = threading.Thread(target=background_processor, daemon=True)
-        processor_thread.start()
-        logging.info("✓ Background processor started")
-        port = int(os.environ.get('PORT', 5000))
-        logging.info(f"=== ✓ APPLICATION READY ===")
-        logging.info(f"✓ Starting Flask server on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-    except Exception as e:
-        logging.error("=== ✗ APPLICATION STARTUP FAILED ===")
-        logging.error(f"Error: {e}")
-        logging.error(f"Traceback: {traceback.format_exc()}")
-        exit(1)
