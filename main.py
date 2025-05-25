@@ -2,6 +2,7 @@
 import os
 import threading
 import logging
+import traceback
 from fetch_live_calculate_density import app, initialize_models, background_processor
 
 if __name__ == '__main__':
@@ -9,17 +10,14 @@ if __name__ == '__main__':
     os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
     
     try:
-        # Initialize models
+        # Initialize models (now always loads)
         logging.info("Starting model initialization")
         initialize_models()
         
-        # Start background processing thread only if models are loaded
-        if os.environ.get('LOAD_MODELS', 'true').lower() == 'true':
-            processor_thread = threading.Thread(target=background_processor, daemon=True)
-            processor_thread.start()
-            logging.info("Background processor started")
-        else:
-            logging.info("Skipping background processor due to LOAD_MODELS=false")
+        # Always start background processing thread
+        processor_thread = threading.Thread(target=background_processor, daemon=True)
+        processor_thread.start()
+        logging.info("Background processor started")
         
         # Get port from environment (Railway sets this)
         port = int(os.environ.get('PORT', 5000))
