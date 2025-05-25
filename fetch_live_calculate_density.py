@@ -84,12 +84,16 @@ def check_system_resources():
         logging.error(f"Error checking system resources: {e}")
         return True
 
-# Initialize models (skip downloads for testing, assume models are in repo)
+# Initialize models (skip if LOAD_MODELS is not set to 'true')
 road_model = None
 vehicle_model = None
 
 def initialize_models():
     global road_model, vehicle_model
+    load_models = os.environ.get('LOAD_MODELS', 'true').lower() == 'true'
+    if not load_models:
+        logging.info("Skipping model loading due to LOAD_MODELS=false")
+        return
     try:
         logging.info("=== Model Initialization Starting ===")
         logging.info(f"Current directory: {os.getcwd()}")
@@ -99,10 +103,12 @@ def initialize_models():
             logging.warning("System resources check failed, but continuing...")
         logging.info("=== Loading TensorFlow Models ===")
         logging.info("Loading road segmentation model...")
+        tf.keras.backend.clear_session()
         road_model = load_trained_model("unet_road_segmentation.Better.keras", custom_objects={"dice_loss": dice_loss})
         gc.collect()
         logging.info("✓ Road model loaded")
         logging.info("Loading vehicle classification model...")
+        tf.keras.backend.clear_session()
         vehicle_model = load_trained_model("unet_multi_classV1.keras", custom_objects={"dice_loss": dice_loss})
         gc.collect()
         logging.info("✓ Vehicle model loaded")
@@ -147,6 +153,9 @@ def fetch_and_process_densities():
     global current_densities, today_densities, last_update_time, is_processing
     if is_processing:
         logging.info("Previous processing still running, skipping this cycle")
+        return
+    if road_model is None or vehicle_model is None:
+        logging.warning("Models not loaded, skipping density processing")
         return
     is_processing = True
     try:
@@ -253,9 +262,14 @@ def home():
             "/densities": "Get current traffic density",
             "/densities/<camera_id>": "Get specific camera density",
             "/status": "Get API status",
-            "/cameras": "Get all camera locations"
+            "/cameras": "Get all camera locations",
+            "/health": "Health check"
         }
     })
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "models_loaded": road_model is not None and vehicle_model is not None})
 
 @app.route('/densities')
 def get_densities():
@@ -376,3 +390,51 @@ default_params = {
     "w": 300,
     "h": 230
 }
+
+# Preprocess Image
+def preprocess_image(img):
+    try:
+        ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+        y, cr, cb = cv2.split(ycrcb)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        y = clahe.apply(y)
+        enhanced_img = cv2.merge((y, cr, cb))
+        img = cv2.cvtColor(enhanced_img, cv2.COLOR_YCrCb2BGR)
+        img = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        img = cv2.filter2D(img, -1, kernel)
+        img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
+        img = img / 255.0
+        img = np.expand_dims(img, axis=0)
+        return img
+    except Exception as e:
+        logging.error(f"Error preprocessing image: {e}")
+        raise
+
+# Post-process Road Segmentation
+def postprocess_road_mask(prediction):
+    try:
+        prediction = prediction.squeeze()
+        return (prediction > 0.5).astype(np.uint8)
+    except Exception as e:
+        logging.error(f"Error postprocessing road mask: {e}")
+        raise
+
+# Post-process Vehicle Segmentation
+def postprocess_vehicle_mask(prediction):
+    try:
+        prediction = prediction.squeeze()
+        return np.argmax(prediction, axis=-1)
+    except Exception as e:
+        logging.error(f"Error postprocessing vehicle mask: {e}")
+        raise
+
+# Extract Segmented Road
+def extract_segmented_road(original_image, road_mask):
+    try:
+        mask_resized = cv2.resize(road_mask, (original_image.shape[1], original_image.shape[0]), interpolation=cv2.INTER_NEAREST)
+        segmented_road = cv2.bitwise_and(original_image, original_image, mask=mask_resized.astype(np.uint8) * 255)
+        return segmented_road, mask_resized
+    except Exception as e:
+        logging.error(f"Error extracting segmented road: {e}")
+        raise
