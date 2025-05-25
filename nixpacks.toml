@@ -1,0 +1,11 @@
+[phases.setup]
+  aptPkgs = ["libgl1", "libglu1-mesa"]
+
+[phases.install]
+  cmds = ["pip install -r requirements.txt"]
+
+[phases.build]
+  cmds = []
+
+[start]
+  cmd = "gunicorn -w 2 -b 0.0.0.0:$PORT fetch_live_calculate_density:app"

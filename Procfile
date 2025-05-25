@@ -1,1 +1,1 @@
-web: gunicorn main:app
+web: gunicorn -w 2 -b 0.0.0.0:$PORT fetch_live_calculate_density:app
