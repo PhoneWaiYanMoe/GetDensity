@@ -1,11 +1,18 @@
 [phases.setup]
-  aptPkgs = ["libgl1", "libglu1-mesa"]
+  aptPkgs = ["libgl1", "libglu1-mesa", "python3-pip"]
 
 [phases.install]
-  cmds = ["pip install -r requirements.txt"]
+  cmds = [
+    "python3 -m venv /opt/venv",
+    "/opt/venv/bin/pip install --no-cache-dir -r requirements.txt"
+  ]
 
 [phases.build]
   cmds = []
 
 [start]
   cmd = "gunicorn -w 2 -b 0.0.0.0:$PORT fetch_live_calculate_density:app"
+
+[environment]
+  PYTHONUNBUFFERED = "1"
+  PYTHONPATH = "/app:/opt/venv/lib/python3.10/site-packages"
